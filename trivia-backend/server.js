@@ -1,47 +1,76 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const fs = require('fs');
+const csv = require('csv-parser');
+const { decode } = require('html-entities');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Global variables
+let mode = 'API';
 let score = 0;
 let questionCount = 0;
 const MAX_QUESTIONS = 15;
 let currentQuestion = null;
+let csvQuestions = [];
+let apiQuestionCache = [];
 
-// Fetch questions from the API
-async function fetchAPIQuestions() {
+const countries = ["United States", "Canada", "Brazil", "Germany", "France"];
+
+// Load CSV questions
+function loadCSVQuestions() {
+  csvQuestions = [];
+  fs.createReadStream('geography_questions.csv')
+    .pipe(csv())
+    .on('data', (row) => {
+      csvQuestions.push({ question: row.Question, correct_answer: row.Answer });
+    })
+    .on('end', () => console.log('CSV loaded'));
+}
+
+// Shuffle array
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
+// Fetch API questions and store in cache
+async function prefetchAPIQuestions() {
   try {
     const response = await axios.get('https://opentdb.com/api.php', {
-      params: { amount: 1, category: 22, type: 'multiple', encode: 'url3986' }
+      params: { amount: 10, category: 22, type: 'multiple', encode: 'url3986' }
     });
-    if (response.data.response_code === 0) {
-      const question = response.data.results[0];
-      currentQuestion = {
-        question: decodeURIComponent(question.question),
-        correct_answer: decodeURIComponent(question.correct_answer),
-        incorrect_answers: question.incorrect_answers.map(a => decodeURIComponent(a)),
-        type: question.type
-      };
-    }
+    const fetchedQuestions = response.data.results.map(q => ({
+      question: decode(decodeURIComponent(q.question)),
+      correct_answer: decode(decodeURIComponent(q.correct_answer)),
+      incorrect_answers: q.incorrect_answers.map(a => decode(decodeURIComponent(a))),
+      type: q.type
+    }));
+    apiQuestionCache.push(...fetchedQuestions);
   } catch (error) {
-    console.error('Error fetching questions:', error);
+    console.error('Error fetching API questions:', error);
   }
 }
 
 // Get a new question
 app.get('/question', async (req, res) => {
-  if (questionCount >= MAX_QUESTIONS) {
-    return res.status(400).json({ error: 'Maximum questions reached' });
+  if (questionCount >= MAX_QUESTIONS) return res.status(400).json({ error: 'Max questions reached' });
+
+  if (mode === 'API') {
+    if (apiQuestionCache.length === 0) await prefetchAPIQuestions();
+    currentQuestion = apiQuestionCache.shift();
+  } else if (mode === 'CSV') {
+    if (csvQuestions.length === 0) return res.status(500).json({ error: 'No CSV questions available' });
+    currentQuestion = csvQuestions.shift();
   }
 
-  await fetchAPIQuestions();
   res.json(currentQuestion);
 });
 
@@ -63,8 +92,19 @@ app.post('/reset', (req, res) => {
   score = 0;
   questionCount = 0;
   currentQuestion = null;
+  loadCSVQuestions();
+  apiQuestionCache = [];
+  prefetchAPIQuestions();
   res.json({ message: 'Game reset' });
 });
 
-// Start server
+// Switch mode
+app.post('/mode', (req, res) => {
+  const newMode = req.body.mode;
+  if (newMode !== 'API' && newMode !== 'CSV') return res.status(400).json({ error: 'Invalid mode' });
+  mode = newMode;
+  currentQuestion = null;
+  res.json({ message: `Mode switched to ${mode}` });
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
