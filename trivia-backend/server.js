@@ -1,46 +1,70 @@
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
 
-// List of country names (you can extend this as needed)
-const countries = ['United States', 'Canada', 'Russia', 'Japan', 'Germany', 'China', 'Brazil', 'Albania', 'Spain', 'Italy', 'France', 'Australia', 'Mexico'];
-
 const app = express();
-const port = 3000;
+const PORT = process.env.PORT || 5001;
 
-// Helper function to check if a question or answer involves a country
-function getAssociatedCountry(questionData) {
-  const { question, correct_answer } = questionData;
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-  // Check if any country name is present in the question or the correct answer
-  for (let country of countries) {
-    if (question.includes(country) || correct_answer.includes(country)) {
-      return country; // Return the associated country
+// Global variables
+let score = 0;
+let questionCount = 0;
+const MAX_QUESTIONS = 15;
+let currentQuestion = null;
+
+// Fetch questions from the API
+async function fetchAPIQuestions() {
+  try {
+    const response = await axios.get('https://opentdb.com/api.php', {
+      params: { amount: 1, category: 22, type: 'multiple', encode: 'url3986' }
+    });
+    if (response.data.response_code === 0) {
+      const question = response.data.results[0];
+      currentQuestion = {
+        question: decodeURIComponent(question.question),
+        correct_answer: decodeURIComponent(question.correct_answer),
+        incorrect_answers: question.incorrect_answers.map(a => decodeURIComponent(a)),
+        type: question.type
+      };
     }
+  } catch (error) {
+    console.error('Error fetching questions:', error);
   }
-  return null; // No country found
 }
 
-app.get('/trivia', async (req, res) => {
-  try {
-    const response = await axios.get('https://opentdb.com/api.php?amount=10&category=22');
-    const triviaQuestions = response.data.results;
-
-    // Filter questions and attribute countries
-    const countryRelatedQuestions = triviaQuestions.map(q => {
-      const country = getAssociatedCountry(q);
-      if (country) {
-        return { ...q, associated_country: country }; // Attach the associated country to the question
-      }
-      return null; // Exclude questions that don't pertain to any country
-    }).filter(q => q !== null); // Filter out nulls
-
-    res.json(countryRelatedQuestions);
-  } catch (error) {
-    console.error('Error fetching trivia:', error);
-    res.status(500).json({ error: 'Failed to fetch trivia questions' });
+// Get a new question
+app.get('/question', async (req, res) => {
+  if (questionCount >= MAX_QUESTIONS) {
+    return res.status(400).json({ error: 'Maximum questions reached' });
   }
+
+  await fetchAPIQuestions();
+  res.json(currentQuestion);
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
+// Submit answer
+app.post('/answer', (req, res) => {
+  const userAnswer = req.body.answer;
+  if (!currentQuestion) return res.status(400).json({ error: 'No active question' });
+
+  const isCorrect = userAnswer.toLowerCase() === currentQuestion.correct_answer.toLowerCase();
+  if (isCorrect) score++;
+  questionCount++;
+
+  res.json({ correct: isCorrect, correct_answer: currentQuestion.correct_answer, score });
+  currentQuestion = null;
 });
+
+// Reset the game
+app.post('/reset', (req, res) => {
+  score = 0;
+  questionCount = 0;
+  currentQuestion = null;
+  res.json({ message: 'Game reset' });
+});
+
+// Start server
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
