@@ -1,7 +1,7 @@
 // src/App.js
 
 import React, { useState, useEffect } from 'react';
-import { Container, Typography, Snackbar, Alert } from '@mui/material';
+import { Container, Typography, Snackbar, Alert, CircularProgress } from '@mui/material';
 import QuestionCard from './components/QuestionCard';
 import ScoreBoard from './components/ScoreBoard';
 import Controls from './components/Controls';
@@ -22,6 +22,8 @@ const App = () => {
   const [gameOver, setGameOver] = useState(false);
   const [currentMode, setCurrentMode] = useState('API');
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+  const [loading, setLoading] = useState(false); // Loading state
+  const [buttonsDisabled, setButtonsDisabled] = useState(false); // Disable answer buttons after submission
 
   // Fetch initial score and question
   useEffect(() => {
@@ -48,16 +50,27 @@ const App = () => {
       return;
     }
 
+    setLoading(true);
+    setButtonsDisabled(false); // Enable buttons when loading a new question
     try {
       const response = await fetchQuestion();
       setQuestionData(response.data);
     } catch (error) {
       console.error('Error fetching question:', error);
-      showSnackbar(error.response?.data?.error || 'Failed to fetch question.', 'error');
+      // Handle mode switch if backend indicates
+      if (error.response && error.response.status === 429) {
+        showSnackbar(error.response.data.error || 'API rate limit exceeded. Switched to CSV mode.', 'warning');
+      } else {
+        showSnackbar(error.response?.data?.error || 'Failed to fetch question.', 'error');
+      }
     }
+    setLoading(false);
   };
 
   const handleAnswer = async (answer) => {
+    if (buttonsDisabled) return; // Prevent multiple submissions
+    setButtonsDisabled(true); // Disable buttons after an answer is clicked
+
     try {
       const response = await submitAnswer(answer);
       const { correct, correct_answer, current_score, questions_answered, game_over } = response.data;
@@ -73,17 +86,22 @@ const App = () => {
       }
 
       if (!game_over) {
-        fetchNewQuestion();
+        // Introduce a short delay before fetching the next question for better UX
+        setTimeout(() => {
+          fetchNewQuestion();
+        }, 1000); // 1-second delay
       } else {
         showSnackbar('Game Over! Please reset to play again.', 'info');
       }
     } catch (error) {
       console.error('Error submitting answer:', error);
       showSnackbar(error.response?.data?.error || 'Failed to submit answer.', 'error');
+      setButtonsDisabled(false); // Re-enable buttons if submission failed
     }
   };
 
   const handleReset = async () => {
+    setLoading(true);
     try {
       const response = await resetGame();
       setScore(0);
@@ -96,17 +114,21 @@ const App = () => {
       console.error('Error resetting game:', error);
       showSnackbar('Failed to reset game.', 'error');
     }
+    setLoading(false);
   };
 
   const handleModeChange = async (mode) => {
+    setLoading(true);
     try {
       await switchMode(mode);
       setCurrentMode(mode);
       showSnackbar(`Mode switched to ${mode}.`, 'success');
+      fetchNewQuestion();
     } catch (error) {
       console.error('Error switching mode:', error);
       showSnackbar('Failed to switch mode.', 'error');
     }
+    setLoading(false);
   };
 
   const showSnackbar = (message, severity) => {
@@ -125,10 +147,15 @@ const App = () => {
 
       <ScoreBoard score={score} questionsAnswered={questionsAnswered} gameOver={gameOver} />
 
-      {questionData && !gameOver && (
-        <QuestionCard questionData={questionData} handleAnswer={handleAnswer} />
+      {loading ? (
+        <CircularProgress sx={{ marginTop: 4 }} />
+      ) : (
+        questionData && !gameOver && (
+          <QuestionCard questionData={questionData} handleAnswer={handleAnswer} buttonsDisabled={buttonsDisabled} />
+        )
       )}
 
+      {/* Placeholder for Hint functionality */}
       <Hint hint={'/* Hint functionality to be implemented */'} />
 
       <Controls reset={handleReset} currentMode={currentMode} changeMode={handleModeChange} />

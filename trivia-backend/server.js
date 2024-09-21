@@ -31,6 +31,7 @@ let csvQuestions = []; // Array to store CSV questions
 
 // List of countries for generating incorrect answers
 const countries = [
+  // (Same list as before)
   "Afghanistan", "Albania", "Algeria", "Andorra", "Angola",
   "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan",
   "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus",
@@ -183,17 +184,18 @@ function extractCountryFromQuestion(question) {
 loadCSVQuestions();
 
 // ======================
-// API Question Cache
+// API Question Cache with Enhanced Strategies
 // ======================
 
 let apiQuestionCache = []; // Cache to store fetched API questions
 const CACHE_SIZE = 10; // Number of questions to keep in cache
+const MAX_PREFETCH_ATTEMPTS = 3; // Max attempts to prefetch on failure
 
 /**
  * Pre-fetches a batch of questions from the API and stores them in the cache.
- * This helps reduce the number of API calls and prevents hitting rate limits.
+ * Implements exponential backoff on 429 errors.
  */
-async function prefetchAPIQuestions() {
+async function prefetchAPIQuestions(attempt = 1) {
   try {
     const response = await axios.get('https://opentdb.com/api.php', {
       params: {
@@ -201,7 +203,8 @@ async function prefetchAPIQuestions() {
         category: 22, // Geography
         type: 'multiple', // Fetch only multiple choice to simplify
         encode: 'url3986' // To handle special characters
-      }
+      },
+      timeout: 5000 // 5 seconds timeout
     });
 
     if (response.data.response_code !== 0) {
@@ -241,9 +244,18 @@ async function prefetchAPIQuestions() {
     console.log(`Prefetched ${apiQuestionCache.length} API questions.`);
   } catch (error) {
     if (error.response && error.response.status === 429) {
-      console.error('Rate limit exceeded while prefetching API questions.');
+      console.error(`Rate limit exceeded while prefetching API questions. Attempt ${attempt} of ${MAX_PREFETCH_ATTEMPTS}.`);
+      if (attempt < MAX_PREFETCH_ATTEMPTS) {
+        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2^attempt seconds
+        console.log(`Retrying in ${delay / 1000} seconds...`);
+        setTimeout(() => prefetchAPIQuestions(attempt + 1), delay);
+      } else {
+        console.error('Max prefetch attempts reached. Switching to CSV mode.');
+        mode = 'CSV';
+      }
     } else {
       console.error('Error prefetching API questions:', error.message);
+      // Optionally switch to CSV mode or handle differently
     }
   }
 }
@@ -272,7 +284,11 @@ app.get('/question', async (req, res) => {
         await prefetchAPIQuestions();
 
         if (apiQuestionCache.length === 0) {
-          return res.status(500).json({ error: 'Failed to fetch API questions. Please try again later.' });
+          // If prefetching failed, switch to CSV mode
+          mode = 'CSV';
+          console.warn('Switched to CSV mode due to API rate limits.');
+          showModeSwitchWarning(res);
+          return;
         }
       }
 
@@ -296,6 +312,13 @@ app.get('/question', async (req, res) => {
     res.status(500).json({ error: 'Internal server error.' });
   }
 });
+
+/**
+ * Helper function to notify the frontend about mode switch due to rate limits.
+ */
+function showModeSwitchWarning(res) {
+  res.status(429).json({ error: 'API rate limit exceeded. Switched to CSV mode.' });
+}
 
 /**
  * POST /answer
@@ -358,15 +381,15 @@ app.get('/score', (req, res) => {
  * POST /reset
  * Resets the game by clearing the score, question count, and reloading CSV questions.
  */
-app.post('/reset', (req, res) => {
+app.post('/reset', async (req, res) => {
   score = 0;
   questionCount = 0;
   currentQuestion = null;
   loadCSVQuestions(); // Reload CSV questions in case they were modified
 
-  // Optionally, clear and refill the API cache
+  // Clear and refill the API cache
   apiQuestionCache = [];
-  prefetchAPIQuestions();
+  await prefetchAPIQuestions();
 
   res.json({ message: 'Game has been reset.' });
 });
