@@ -197,12 +197,10 @@ let cooldownTimer = null; // Timer for cooldown before switching back to API mod
 /**
  * Pre-fetches a batch of questions from the API and stores them in the cache.
  * Implements exponential backoff on 429 errors.
- * @param {number} attempt - The current attempt number for exponential backoff.
- * @param {number} amount - The number of questions to fetch.
  */
-async function prefetchAPIQuestions(attempt = 1, amount = CACHE_SIZE) {
-  if (isPrefetching || (isInFallbackMode && attempt === 1)) {
-    // Prevent multiple prefetch attempts or prefetching during fallback
+async function prefetchAPIQuestions(attempt = 1) {
+  if (isPrefetching) {
+    // Prevent multiple prefetch attempts
     return;
   }
 
@@ -211,7 +209,7 @@ async function prefetchAPIQuestions(attempt = 1, amount = CACHE_SIZE) {
   try {
     const response = await axios.get('https://opentdb.com/api.php', {
       params: {
-        amount: amount,
+        amount: CACHE_SIZE,
         category: 22, // Geography
         type: 'multiple', // Fetch only multiple choice to simplify
         encode: 'url3986' // To handle special characters
@@ -227,14 +225,17 @@ async function prefetchAPIQuestions(attempt = 1, amount = CACHE_SIZE) {
 
     const fetchedQuestions = response.data.results;
 
-    let addedQuestions = 0;
     for (const q of fetchedQuestions) {
       const questionText = decode(decodeURIComponent(q.question));
       const correctAnswer = decode(decodeURIComponent(q.correct_answer));
       const incorrectAnswers = q.incorrect_answers.map(ans => decode(decodeURIComponent(ans)));
 
-      // Include questions that are relevant even if they don't mention a country
-      // Optionally, adjust or remove filtering logic here
+      // Adjusted Filtering: Include questions mentioning a country in the question text
+      const countryInQuestion = extractCountryFromQuestion(questionText);
+      if (!countryInQuestion) {
+        console.warn(`Skipped question because it does not mention any country: ${questionText}`);
+        continue;
+      }
 
       const allAnswers = shuffleArray([correctAnswer, ...incorrectAnswers]);
 
@@ -243,9 +244,8 @@ async function prefetchAPIQuestions(attempt = 1, amount = CACHE_SIZE) {
         correct_answer: correctAnswer,
         answers: allAnswers,
         type: 'multiple'
+        // hint: '/* Add hint here */' // Placeholder for hints
       });
-
-      addedQuestions++;
 
       // Stop if cache is full
       if (apiQuestionCache.length >= CACHE_SIZE) {
@@ -253,26 +253,30 @@ async function prefetchAPIQuestions(attempt = 1, amount = CACHE_SIZE) {
       }
     }
 
-    console.log(`Prefetched ${addedQuestions} API questions. Total cache size: ${apiQuestionCache.length}`);
+    console.log(`Prefetched ${apiQuestionCache.length} API questions.`);
 
-    if (addedQuestions === 0 && attempt < MAX_PREFETCH_ATTEMPTS) {
-      // Retry if no questions were added
-      console.warn('No questions added to cache, retrying prefetch.');
-      setTimeout(() => prefetchAPIQuestions(attempt + 1, amount), 1000);
+    if (apiQuestionCache.length > 0) {
+      // If we have successfully prefetched questions, switch to API mode
+      mode = 'API';
+      isInFallbackMode = false;
+      console.log('Switched back to API mode.');
     }
+
   } catch (error) {
     if (error.response && error.response.status === 429) {
       console.error(`Rate limit exceeded while prefetching API questions. Attempt ${attempt} of ${MAX_PREFETCH_ATTEMPTS}.`);
       if (attempt < MAX_PREFETCH_ATTEMPTS) {
         const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2^attempt seconds
         console.log(`Retrying in ${delay / 1000} seconds...`);
-        setTimeout(() => prefetchAPIQuestions(attempt + 1, amount), delay);
+        setTimeout(() => prefetchAPIQuestions(attempt + 1), delay);
       } else {
         console.error('Max prefetch attempts reached. Switching to CSV mode.');
         switchToCSVMode();
       }
     } else {
       console.error('Error prefetching API questions:', error.message);
+      // Optionally switch to CSV mode or handle differently
+      switchToCSVMode();
     }
   } finally {
     isPrefetching = false;
@@ -456,22 +460,24 @@ app.post('/mode', async (req, res) => {
     return res.status(400).json({ error: 'Invalid mode. Use "API" or "CSV".' });
   }
 
-  if (newMode === 'API' && isInFallbackMode) {
-    // Prevent switching back to API mode while in fallback
-    return res.status(400).json({ error: 'Cannot switch to API mode while in fallback. Please wait for cooldown.' });
-  }
-
   mode = newMode;
-  isInFallbackMode = newMode === 'CSV';
+  isInFallbackMode = (newMode === 'CSV');
   currentQuestion = null; // Reset current question when mode changes
 
   if (mode === 'API') {
     // Attempt to prefetch API questions when switching back to API mode
-    prefetchAPIQuestions();
+    await prefetchAPIQuestions();
+
+    if (apiQuestionCache.length === 0) {
+      // If prefetching failed due to rate limits, inform the user
+      switchToCSVMode(); // Switch back to CSV mode
+      return res.status(429).json({ error: 'API rate limit still exceeded. Switched back to CSV mode.' });
+    }
   }
 
   res.json({ message: `Mode has been switched to ${mode}.` });
 });
+
 
 // ======================
 // Start the Server

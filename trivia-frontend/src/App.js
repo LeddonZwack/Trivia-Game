@@ -130,16 +130,25 @@ const App = () => {
     if (mode === currentMode) return; // No change needed
     setLoading(true);
     try {
-      await switchMode(mode);
+      const response = await switchMode(mode);
       setCurrentMode(mode);
-      showSnackbar(`Mode switched to ${mode}.`, 'success');
+      showSnackbar(response.data.message, 'success');
       await fetchNewQuestion();
     } catch (error) {
       console.error('Error switching mode:', error);
-      showSnackbar('Failed to switch mode.', 'error');
+      if (error.response && error.response.status === 429) {
+        // Backend indicates that rate limit is still exceeded
+        setCurrentMode('CSV'); // Ensure mode reflects the actual state
+        showSnackbar(error.response.data.error || 'API rate limit still exceeded. Switched back to CSV mode.', 'warning');
+        // Fetch a new question in CSV mode
+        await fetchNewQuestion();
+      } else {
+        showSnackbar('Failed to switch mode.', 'error');
+      }
     }
     setLoading(false);
   };
+  
 
   const showSnackbar = (message, severity) => {
     setSnackbar({ open: true, message, severity });
