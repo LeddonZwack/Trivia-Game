@@ -3,7 +3,7 @@
 import React from 'react';
 import { Card, CardContent, Typography, Button, Grid } from '@mui/material';
 
-const QuestionCard = ({ questionData, handleAnswer }) => {
+const QuestionCard = ({ questionData, handleAnswer, buttonsDisabled }) => {
   const { question, answers } = questionData;
 
   return (
@@ -19,6 +19,7 @@ const QuestionCard = ({ questionData, handleAnswer }) => {
                 variant="contained"
                 fullWidth
                 onClick={() => handleAnswer(answer)}
+                disabled={buttonsDisabled}
               >
                 {answer}
               </Button>

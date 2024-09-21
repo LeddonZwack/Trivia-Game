@@ -31,7 +31,6 @@ let csvQuestions = []; // Array to store CSV questions
 
 // List of countries for generating incorrect answers
 const countries = [
-  // (Same list as before)
   "Afghanistan", "Albania", "Algeria", "Andorra", "Angola",
   "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan",
   "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus",
