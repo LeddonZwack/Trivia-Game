@@ -1,7 +1,7 @@
 // src/App.js
 
 import React, { useState, useEffect } from 'react';
-import { Container, Typography, Snackbar, Alert, CircularProgress } from '@mui/material';
+import { Container, Typography, Snackbar, Alert, CircularProgress, Box } from '@mui/material';
 import QuestionCard from './components/QuestionCard';
 import ScoreBoard from './components/ScoreBoard';
 import Controls from './components/Controls';
@@ -24,6 +24,7 @@ const App = () => {
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [loading, setLoading] = useState(false); // Loading state
   const [buttonsDisabled, setButtonsDisabled] = useState(false); // Disable answer buttons after submission
+  const [isResetting, setIsResetting] = useState(false); // Indicates if a reset is in progress
 
   // Fetch initial score and question
   useEffect(() => {
@@ -59,7 +60,11 @@ const App = () => {
       console.error('Error fetching question:', error);
       // Handle mode switch if backend indicates
       if (error.response && error.response.status === 429) {
+        // Backend has switched to CSV mode
+        setCurrentMode('CSV'); // Update frontend mode
         showSnackbar(error.response.data.error || 'API rate limit exceeded. Switched to CSV mode.', 'warning');
+        // Attempt to fetch a question in CSV mode
+        await fetchNewQuestion();
       } else {
         showSnackbar(error.response?.data?.error || 'Failed to fetch question.', 'error');
       }
@@ -101,6 +106,8 @@ const App = () => {
   };
 
   const handleReset = async () => {
+    if (isResetting) return; // Prevent multiple resets
+    setIsResetting(true);
     setLoading(true);
     try {
       const response = await resetGame();
@@ -108,22 +115,25 @@ const App = () => {
       setQuestionsAnswered(0);
       setGameOver(false);
       setQuestionData(null);
+      setCurrentMode('API'); // Reset mode to API on game reset
       showSnackbar(response.data.message, 'success');
-      fetchNewQuestion();
+      await fetchNewQuestion();
     } catch (error) {
       console.error('Error resetting game:', error);
       showSnackbar('Failed to reset game.', 'error');
     }
     setLoading(false);
+    setIsResetting(false);
   };
 
   const handleModeChange = async (mode) => {
+    if (mode === currentMode) return; // No change needed
     setLoading(true);
     try {
       await switchMode(mode);
       setCurrentMode(mode);
       showSnackbar(`Mode switched to ${mode}.`, 'success');
-      fetchNewQuestion();
+      await fetchNewQuestion();
     } catch (error) {
       console.error('Error switching mode:', error);
       showSnackbar('Failed to switch mode.', 'error');
@@ -145,20 +155,36 @@ const App = () => {
         Geography Trivia
       </Typography>
 
+      {/* Display Current Mode */}
+      <Typography variant="subtitle1" color="textSecondary">
+        Current Mode: <strong>{currentMode}</strong>
+      </Typography>
+
       <ScoreBoard score={score} questionsAnswered={questionsAnswered} gameOver={gameOver} />
 
       {loading ? (
-        <CircularProgress sx={{ marginTop: 4 }} />
+        <Box sx={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}>
+          <CircularProgress />
+        </Box>
       ) : (
         questionData && !gameOver && (
-          <QuestionCard questionData={questionData} handleAnswer={handleAnswer} buttonsDisabled={buttonsDisabled} />
+          <QuestionCard
+            questionData={questionData}
+            handleAnswer={handleAnswer}
+            buttonsDisabled={buttonsDisabled}
+          />
         )
       )}
 
       {/* Placeholder for Hint functionality */}
       <Hint hint={'/* Hint functionality to be implemented */'} />
 
-      <Controls reset={handleReset} currentMode={currentMode} changeMode={handleModeChange} />
+      <Controls
+        reset={handleReset}
+        currentMode={currentMode}
+        changeMode={handleModeChange}
+        isResetting={isResetting}
+      />
 
       <Snackbar
         open={snackbar.open}

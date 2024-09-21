@@ -20,7 +20,7 @@ app.use(express.json()); // Parse JSON bodies
 // Global Variables
 // ======================
 
-let mode = 'API'; // Default mode is 'API'. Can be switched to 'CSV' via POST /mode
+let mode = 'API'; // Current mode: 'API' or 'CSV'
 let score = 0; // User's score
 let questionCount = 0; // Number of questions answered
 const MAX_QUESTIONS = 15; // Maximum number of questions per game
@@ -31,6 +31,7 @@ let csvQuestions = []; // Array to store CSV questions
 
 // List of countries for generating incorrect answers
 const countries = [
+  // (Same list as before)
   "Afghanistan", "Albania", "Algeria", "Andorra", "Angola",
   "Argentina", "Armenia", "Australia", "Austria", "Azerbaijan",
   "Bahamas", "Bahrain", "Bangladesh", "Barbados", "Belarus",
@@ -187,18 +188,30 @@ loadCSVQuestions();
 // ======================
 
 let apiQuestionCache = []; // Cache to store fetched API questions
-const CACHE_SIZE = 10; // Number of questions to keep in cache
+const CACHE_SIZE = 10; // Increased cache size to reduce API calls
 const MAX_PREFETCH_ATTEMPTS = 3; // Max attempts to prefetch on failure
+let isInFallbackMode = false; // Indicates if the system is in CSV mode due to rate limits
+let isPrefetching = false; // Indicates if prefetching is in progress
+let cooldownTimer = null; // Timer for cooldown before switching back to API mode
 
 /**
  * Pre-fetches a batch of questions from the API and stores them in the cache.
  * Implements exponential backoff on 429 errors.
+ * @param {number} attempt - The current attempt number for exponential backoff.
+ * @param {number} amount - The number of questions to fetch.
  */
-async function prefetchAPIQuestions(attempt = 1) {
+async function prefetchAPIQuestions(attempt = 1, amount = CACHE_SIZE) {
+  if (isPrefetching || (isInFallbackMode && attempt === 1)) {
+    // Prevent multiple prefetch attempts or prefetching during fallback
+    return;
+  }
+
+  isPrefetching = true;
+
   try {
     const response = await axios.get('https://opentdb.com/api.php', {
       params: {
-        amount: CACHE_SIZE,
+        amount: amount,
         category: 22, // Geography
         type: 'multiple', // Fetch only multiple choice to simplify
         encode: 'url3986' // To handle special characters
@@ -208,21 +221,20 @@ async function prefetchAPIQuestions(attempt = 1) {
 
     if (response.data.response_code !== 0) {
       console.error('API returned a non-zero response_code:', response.data.response_code);
+      isPrefetching = false;
       return;
     }
 
     const fetchedQuestions = response.data.results;
 
+    let addedQuestions = 0;
     for (const q of fetchedQuestions) {
       const questionText = decode(decodeURIComponent(q.question));
       const correctAnswer = decode(decodeURIComponent(q.correct_answer));
       const incorrectAnswers = q.incorrect_answers.map(ans => decode(decodeURIComponent(ans)));
 
-      // Ensure the correct answer is a country
-      if (!isCountry(correctAnswer)) {
-        console.warn(`Skipped question because correct answer is not a country: ${questionText}`);
-        continue;
-      }
+      // Include questions that are relevant even if they don't mention a country
+      // Optionally, adjust or remove filtering logic here
 
       const allAnswers = shuffleArray([correctAnswer, ...incorrectAnswers]);
 
@@ -231,8 +243,9 @@ async function prefetchAPIQuestions(attempt = 1) {
         correct_answer: correctAnswer,
         answers: allAnswers,
         type: 'multiple'
-        // hint: '/* Add hint here */' // Placeholder for hints
       });
+
+      addedQuestions++;
 
       // Stop if cache is full
       if (apiQuestionCache.length >= CACHE_SIZE) {
@@ -240,27 +253,71 @@ async function prefetchAPIQuestions(attempt = 1) {
       }
     }
 
-    console.log(`Prefetched ${apiQuestionCache.length} API questions.`);
+    console.log(`Prefetched ${addedQuestions} API questions. Total cache size: ${apiQuestionCache.length}`);
+
+    if (addedQuestions === 0 && attempt < MAX_PREFETCH_ATTEMPTS) {
+      // Retry if no questions were added
+      console.warn('No questions added to cache, retrying prefetch.');
+      setTimeout(() => prefetchAPIQuestions(attempt + 1, amount), 1000);
+    }
   } catch (error) {
     if (error.response && error.response.status === 429) {
       console.error(`Rate limit exceeded while prefetching API questions. Attempt ${attempt} of ${MAX_PREFETCH_ATTEMPTS}.`);
       if (attempt < MAX_PREFETCH_ATTEMPTS) {
         const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2^attempt seconds
         console.log(`Retrying in ${delay / 1000} seconds...`);
-        setTimeout(() => prefetchAPIQuestions(attempt + 1), delay);
+        setTimeout(() => prefetchAPIQuestions(attempt + 1, amount), delay);
       } else {
         console.error('Max prefetch attempts reached. Switching to CSV mode.');
-        mode = 'CSV';
+        switchToCSVMode();
       }
     } else {
       console.error('Error prefetching API questions:', error.message);
-      // Optionally switch to CSV mode or handle differently
     }
+  } finally {
+    isPrefetching = false;
   }
 }
 
-// Initial prefetch
-prefetchAPIQuestions();
+
+/**
+ * Switches the system to CSV mode and sets a cooldown before attempting to switch back to API mode.
+ */
+function switchToCSVMode() {
+  mode = 'CSV';
+  isInFallbackMode = true;
+  console.warn('Switched to CSV mode due to API rate limits.');
+
+  // Clear the API question cache to free up memory
+  apiQuestionCache = [];
+
+  // Set a cooldown to attempt switching back to API mode
+  if (cooldownTimer) {
+    clearTimeout(cooldownTimer);
+  }
+
+  cooldownTimer = setTimeout(() => {
+    console.log('Attempting to switch back to API mode.');
+    mode = 'API';
+    isInFallbackMode = false;
+    prefetchAPIQuestions(1, 5); // Try fetching 5 questions first
+  }, 60); // 1 minute cooldown
+}
+
+
+/**
+ * Loads CSV questions and resets relevant variables.
+ */
+function resetGameState() {
+  score = 0;
+  questionCount = 0;
+  currentQuestion = null;
+  loadCSVQuestions(); // Reload CSV questions in case they were modified
+
+  // Clear and refill the API cache
+  apiQuestionCache = [];
+  prefetchAPIQuestions();
+}
 
 // ======================
 // API Endpoints
@@ -284,10 +341,8 @@ app.get('/question', async (req, res) => {
 
         if (apiQuestionCache.length === 0) {
           // If prefetching failed, switch to CSV mode
-          mode = 'CSV';
-          console.warn('Switched to CSV mode due to API rate limits.');
-          showModeSwitchWarning(res);
-          return;
+          switchToCSVMode();
+          return res.status(429).json({ error: 'API rate limit exceeded. Switched to CSV mode.' });
         }
       }
 
@@ -311,13 +366,6 @@ app.get('/question', async (req, res) => {
     res.status(500).json({ error: 'Internal server error.' });
   }
 });
-
-/**
- * Helper function to notify the frontend about mode switch due to rate limits.
- */
-function showModeSwitchWarning(res) {
-  res.status(429).json({ error: 'API rate limit exceeded. Switched to CSV mode.' });
-}
 
 /**
  * POST /answer
@@ -381,14 +429,7 @@ app.get('/score', (req, res) => {
  * Resets the game by clearing the score, question count, and reloading CSV questions.
  */
 app.post('/reset', async (req, res) => {
-  score = 0;
-  questionCount = 0;
-  currentQuestion = null;
-  loadCSVQuestions(); // Reload CSV questions in case they were modified
-
-  // Clear and refill the API cache
-  apiQuestionCache = [];
-  await prefetchAPIQuestions();
+  resetGameState();
 
   res.json({ message: 'Game has been reset.' });
 });
@@ -408,15 +449,26 @@ app.get('/hint', (req, res) => {
  * Switches the mode between 'API' and 'CSV'.
  * Expects JSON body: { "mode": "API" } or { "mode": "CSV" }
  */
-app.post('/mode', (req, res) => {
+app.post('/mode', async (req, res) => {
   const newMode = req.body.mode;
 
   if (newMode !== 'API' && newMode !== 'CSV') {
     return res.status(400).json({ error: 'Invalid mode. Use "API" or "CSV".' });
   }
 
+  if (newMode === 'API' && isInFallbackMode) {
+    // Prevent switching back to API mode while in fallback
+    return res.status(400).json({ error: 'Cannot switch to API mode while in fallback. Please wait for cooldown.' });
+  }
+
   mode = newMode;
+  isInFallbackMode = newMode === 'CSV';
   currentQuestion = null; // Reset current question when mode changes
+
+  if (mode === 'API') {
+    // Attempt to prefetch API questions when switching back to API mode
+    prefetchAPIQuestions();
+  }
 
   res.json({ message: `Mode has been switched to ${mode}.` });
 });

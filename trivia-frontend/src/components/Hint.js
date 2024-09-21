@@ -10,7 +10,7 @@ const Hint = ({ hint }) => {
         Get Hint
       </Button>
       <Typography variant="body1" color="textSecondary" sx={{ marginTop: 1 }}>
-        Hint: {/* Hint functionality to be implemented */}
+        Hint: {hint}
       </Typography>
     </div>
   );
