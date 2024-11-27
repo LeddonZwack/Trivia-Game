@@ -30,7 +30,6 @@ const App = () => {
   useEffect(() => {
     fetchCurrentScore();
     fetchNewQuestion();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentMode]);
 
   const fetchCurrentScore = async () => {
